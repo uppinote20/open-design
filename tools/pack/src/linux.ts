@@ -36,6 +36,9 @@ const execFileAsync = promisify(execFile);
 
 const PRODUCT_NAME = "Open Design";
 const APP_IMAGE_PRODUCT_NAME = "Open-Design";
+const DEB_PACKAGE_NAME = "open-design";
+const DEB_INSTALL_ROOT = "/opt/open-design";
+const DEB_BINARY_PATH = "/usr/bin/open-design";
 const DESKTOP_LOG_ECHO_ENV = "OD_DESKTOP_LOG_ECHO";
 // The containerized build sets this to the standalone pnpm binary fetched by
 // buildDockerArgs; runProductionInstall reads it to avoid invoking `npm` inside
@@ -133,7 +136,7 @@ export function buildDockerArgs(
   //   - config.namespace is sanitized at config-time by resolveNamespace() in
   //     @open-design/sidecar-proto (restricted to namespace charset)
   //   - config.to is enum-validated by resolveToolPackBuildOutput() in config.ts
-  //     to one of "all" | "appimage" | "dir"
+  //     to one of "all" | "appimage" | "deb" | "dir"
   //   - config.portable is a boolean
   //   - config.appVersion is shell-quoted below because release versions can
   //     carry punctuation that is not part of the namespace / target enums.
@@ -291,6 +294,8 @@ type LinuxPaths = {
   assembledAppRoot: string;
   assembledMainEntryPath: string;
   assembledPackageJsonPath: string;
+  debPackageRoot: string;
+  debRoot: string;
   installAppImagePath: string;
   installDesktopFilePath: string;
   installIconPath: string;
@@ -322,6 +327,8 @@ function resolveLinuxPaths(config: ToolPackConfig): LinuxPaths {
     assembledAppRoot: join(namespaceRoot, "assembled", "app"),
     assembledMainEntryPath: join(namespaceRoot, "assembled", "app", "main.cjs"),
     assembledPackageJsonPath: join(namespaceRoot, "assembled", "app", "package.json"),
+    debPackageRoot: join(namespaceRoot, "deb", "package"),
+    debRoot: join(namespaceRoot, "deb"),
     installAppImagePath: join(home, ".local", "bin", appImageInstallName(config.namespace)),
     installDesktopFilePath: join(home, ".local", "share", "applications", desktopFileName(config.namespace)),
     installIconPath: join(
@@ -612,10 +619,376 @@ async function findBuiltAppImage(paths: LinuxPaths): Promise<string | null> {
   return appImage ? join(paths.appBuilderOutputRoot, appImage) : null;
 }
 
+async function findBuiltDeb(paths: LinuxPaths): Promise<string | null> {
+  if (!(await pathExists(paths.appBuilderOutputRoot))) return null;
+  const entries = await readdir(paths.appBuilderOutputRoot);
+  const deb = entries.find((entry) => entry.endsWith(".deb"));
+  return deb ? join(paths.appBuilderOutputRoot, deb) : null;
+}
+
+export function debianArchitectureForNodeArch(arch: NodeJS.Architecture): string {
+  switch (arch) {
+    case "x64":
+      return "amd64";
+    case "arm64":
+      return "arm64";
+    default:
+      throw new Error(`unsupported Debian package architecture for Node arch: ${arch}`);
+  }
+}
+
+export function debianVersionForAppVersion(appVersion: string): string {
+  const packageVersion = electronBuilderVersionForAppVersion(appVersion);
+  const upstreamVersion = packageVersion
+    .replace(/[-.](?=[a-zA-Z])/g, "~")
+    .replace(/[^0-9A-Za-z.+:~]/g, ".");
+  if (!/^[0-9]/.test(upstreamVersion)) {
+    throw new Error(`Debian package version must start with a digit: ${appVersion}`);
+  }
+  return `${upstreamVersion}-1`;
+}
+
+function debianPackageFileName(version: string, architecture: string): string {
+  return `${DEB_PACKAGE_NAME}_${version}_${architecture}.deb`;
+}
+
+export type LinuxDebControlValues = {
+  architecture: string;
+  version: string;
+};
+
+export function renderOpenDesignDebControl(values: LinuxDebControlValues): string {
+  return [
+    `Package: ${DEB_PACKAGE_NAME}`,
+    `Version: ${values.version}`,
+    "Section: devel",
+    "Priority: optional",
+    `Architecture: ${values.architecture}`,
+    "Maintainer: Open Design Contributors <maintainers@open-design.ai>",
+    "Depends: ca-certificates",
+    "Recommends: git, curl",
+    "Homepage: https://github.com/nexu-io/open-design",
+    "Description: Open Design headless runtime",
+    " Local-first design product for running Open Design web and daemon in",
+    " headless Linux environments such as WSL, servers, and CI machines.",
+    "",
+  ].join("\n");
+}
+
+export function renderOpenDesignDebService(defaultNamespace: string): string {
+  return [
+    "[Unit]",
+    "Description=Open Design headless web runtime",
+    "After=network.target",
+    "",
+    "[Service]",
+    "Type=simple",
+    `Environment=OD_PACKAGED_NAMESPACE=${sanitizeNamespace(defaultNamespace)}`,
+    `Environment=${DESKTOP_LOG_ECHO_ENV}=1`,
+    `ExecStart=${DEB_BINARY_PATH} run`,
+    "Restart=on-failure",
+    "RestartSec=2",
+    "",
+    "[Install]",
+    "WantedBy=default.target",
+    "",
+  ].join("\n");
+}
+
+export function renderOpenDesignDebLauncher(defaultNamespace: string): string {
+  return [
+    "#!/bin/sh",
+    "set -eu",
+    "",
+    `DEFAULT_NAMESPACE=${JSON.stringify(sanitizeNamespace(defaultNamespace))}`,
+    `APP_ROOT=${JSON.stringify(DEB_INSTALL_ROOT)}`,
+    'APP_DIR="$APP_ROOT/app"',
+    'RESOURCE_ROOT="$APP_ROOT/resources/open-design"',
+    'NODE="$RESOURCE_ROOT/bin/node"',
+    'ENTRY="$APP_DIR/node_modules/@open-design/packaged/dist/headless.mjs"',
+    'NAMESPACE="${OD_PACKAGED_NAMESPACE:-$DEFAULT_NAMESPACE}"',
+    'DATA_BASE="${OD_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/open-design}"',
+    'RUNTIME_ROOT="$DATA_BASE/namespaces/$NAMESPACE"',
+    'LOG_PATH="$RUNTIME_ROOT/logs/desktop/latest.log"',
+    'PID_FILE="$RUNTIME_ROOT/runtime/open-design.pid"',
+    'WEB_IDENTITY="$RUNTIME_ROOT/runtime/web-root.json"',
+    'SERVICE_NAME="open-design.service"',
+    "",
+    'export OD_PACKAGED_NAMESPACE="$NAMESPACE"',
+    'export OD_DATA_DIR="$DATA_BASE"',
+    'export OD_RESOURCE_ROOT="$RESOURCE_ROOT"',
+    "",
+    "usage() {",
+    "  cat <<'EOF'",
+    "Usage: open-design <command>",
+    "",
+    "Commands:",
+    "  start      Start Open Design in the background.",
+    "  stop       Stop the background runtime.",
+    "  restart    Restart the background runtime.",
+    "  status     Print runtime status and URL when available.",
+    "  url        Print only the web URL when available.",
+    "  logs       Tail the Open Design headless log.",
+    "  doctor     Check the packaged runtime and Claude Code visibility.",
+    "  run        Run the headless runtime in the foreground.",
+    "",
+    "Environment:",
+    "  OD_PACKAGED_NAMESPACE  Runtime namespace override.",
+    "  OD_DATA_DIR            Data root override; defaults to XDG data home.",
+    "EOF",
+    "}",
+    "",
+    "die() {",
+    "  printf '%s\\n' \"$1\" >&2",
+    "  exit 1",
+    "}",
+    "",
+    "ensure_layout() {",
+    "  [ -x \"$NODE\" ] || die \"bundled Node not found or not executable: $NODE\"",
+    "  [ -f \"$ENTRY\" ] || die \"Open Design headless entry not found: $ENTRY\"",
+    "}",
+    "",
+    "can_use_systemd() {",
+    "  command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1",
+    "}",
+    "",
+    "read_pid() {",
+    "  [ -f \"$PID_FILE\" ] && cat \"$PID_FILE\" || true",
+    "}",
+    "",
+    "is_running_pid() {",
+    "  [ -n \"${1:-}\" ] && kill -0 \"$1\" 2>/dev/null",
+    "}",
+    "",
+    "read_url() {",
+    "  [ -f \"$WEB_IDENTITY\" ] || return 1",
+    "  \"$NODE\" -e 'const fs = require(\"fs\"); const payload = JSON.parse(fs.readFileSync(process.argv[1], \"utf8\")); if (payload && typeof payload.url === \"string\") process.stdout.write(payload.url);' \"$WEB_IDENTITY\"",
+    "}",
+    "",
+    "wait_for_url() {",
+    "  i=0",
+    "  while [ \"$i\" -lt 95 ]; do",
+    "    url=\"$(read_url 2>/dev/null || true)\"",
+    "    if [ -n \"$url\" ]; then",
+    "      printf 'Open Design is running: %s\\n' \"$url\"",
+    "      return 0",
+    "    fi",
+    "    sleep 1",
+    "    i=$((i + 1))",
+    "  done",
+    "  printf 'Open Design started; URL is not ready yet. Logs: %s\\n' \"$LOG_PATH\"",
+    "}",
+    "",
+    "start_cmd() {",
+    "  ensure_layout",
+    "  mkdir -p \"$(dirname \"$LOG_PATH\")\" \"$(dirname \"$PID_FILE\")\"",
+    "  if can_use_systemd; then",
+    "    systemctl --user daemon-reload >/dev/null 2>&1 || true",
+    "    systemctl --user start \"$SERVICE_NAME\"",
+    "    wait_for_url",
+    "    return 0",
+    "  fi",
+    "",
+    "  pid=\"$(read_pid)\"",
+    "  if is_running_pid \"$pid\"; then",
+    "    wait_for_url",
+    "    return 0",
+    "  fi",
+    "",
+    "  rm -f \"$PID_FILE\"",
+    "  nohup \"$NODE\" \"$ENTRY\" \"$@\" >>\"$LOG_PATH\" 2>&1 &",
+    "  echo \"$!\" >\"$PID_FILE\"",
+    "  wait_for_url",
+    "}",
+    "",
+    "stop_cmd() {",
+    "  stopped=0",
+    "  if can_use_systemd && systemctl --user is-active --quiet \"$SERVICE_NAME\"; then",
+    "    systemctl --user stop \"$SERVICE_NAME\"",
+    "    stopped=1",
+    "  fi",
+    "",
+    "  pid=\"$(read_pid)\"",
+    "  if is_running_pid \"$pid\"; then",
+    "    kill \"$pid\" 2>/dev/null || true",
+    "    i=0",
+    "    while is_running_pid \"$pid\" && [ \"$i\" -lt 20 ]; do",
+    "      sleep 0.5",
+    "      i=$((i + 1))",
+    "    done",
+    "    if is_running_pid \"$pid\"; then",
+    "      kill -KILL \"$pid\" 2>/dev/null || true",
+    "    fi",
+    "    rm -f \"$PID_FILE\"",
+    "    stopped=1",
+    "  fi",
+    "",
+    "  if [ \"$stopped\" -eq 1 ]; then",
+    "    printf 'Open Design stopped\\n'",
+    "  else",
+    "    printf 'Open Design is not running\\n'",
+    "  fi",
+    "}",
+    "",
+    "status_cmd() {",
+    "  if can_use_systemd && systemctl --user is-active --quiet \"$SERVICE_NAME\"; then",
+    "    printf 'running (systemd user service)\\n'",
+    "    read_url 2>/dev/null || true",
+    "    printf '\\n'",
+    "    return 0",
+    "  fi",
+    "  pid=\"$(read_pid)\"",
+    "  if is_running_pid \"$pid\"; then",
+    "    printf 'running (pid %s)\\n' \"$pid\"",
+    "    read_url 2>/dev/null || true",
+    "    printf '\\n'",
+    "    return 0",
+    "  fi",
+    "  printf 'stopped\\n'",
+    "  return 3",
+    "}",
+    "",
+    "logs_cmd() {",
+    "  [ -f \"$LOG_PATH\" ] || die \"log file not found: $LOG_PATH\"",
+    "  if [ \"$#\" -eq 0 ]; then",
+    "    set -- -n 80",
+    "  fi",
+    "  exec tail \"$@\" \"$LOG_PATH\"",
+    "}",
+    "",
+    "doctor_cmd() {",
+    "  fail=0",
+    "  if [ -x \"$NODE\" ]; then",
+    "    printf '[ok] bundled Node: %s\\n' \"$(\"$NODE\" --version)\"",
+    "  else",
+    "    printf '[missing] bundled Node: %s\\n' \"$NODE\"",
+    "    fail=1",
+    "  fi",
+    "  if [ -f \"$ENTRY\" ]; then",
+    "    printf '[ok] headless entry: %s\\n' \"$ENTRY\"",
+    "  else",
+    "    printf '[missing] headless entry: %s\\n' \"$ENTRY\"",
+    "    fail=1",
+    "  fi",
+    "  if command -v claude >/dev/null 2>&1; then",
+    "    printf '[ok] claude CLI: %s\\n' \"$(command -v claude)\"",
+    "    claude --version || true",
+    "    if claude auth status --text; then",
+    "      printf '[ok] claude auth status\\n'",
+    "    else",
+    "      printf '[error] claude auth status failed\\n'",
+    "      fail=1",
+    "    fi",
+    "  else",
+    "    printf '[missing] claude CLI is not on PATH. Install and authenticate Claude Code before running agent workflows.\\n'",
+    "    fail=1",
+    "  fi",
+    "  exit \"$fail\"",
+    "}",
+    "",
+    'cmd="${1:-start}"',
+    'if [ "$#" -gt 0 ]; then',
+    "  shift",
+    "fi",
+    "",
+    "case \"$cmd\" in",
+    "  start)",
+    "    start_cmd \"$@\"",
+    "    ;;",
+    "  stop)",
+    "    stop_cmd",
+    "    ;;",
+    "  restart)",
+    "    stop_cmd",
+    "    start_cmd \"$@\"",
+    "    ;;",
+    "  status)",
+    "    status_cmd",
+    "    ;;",
+    "  url)",
+    "    read_url",
+    "    ;;",
+    "  logs)",
+    "    logs_cmd \"$@\"",
+    "    ;;",
+    "  doctor)",
+    "    doctor_cmd",
+    "    ;;",
+    "  run)",
+    "    ensure_layout",
+    "    exec \"$NODE\" \"$ENTRY\" \"$@\"",
+    "    ;;",
+    "  help|--help|-h)",
+    "    usage",
+    "    ;;",
+    "  *)",
+    "    usage >&2",
+    "    exit 64",
+    "    ;;",
+    "esac",
+    "",
+  ].join("\n");
+}
+
+async function buildLinuxDebPackage(config: ToolPackConfig, paths: LinuxPaths): Promise<string> {
+  const version = debianVersionForAppVersion(await readPackagedVersion(config));
+  const architecture = debianArchitectureForNodeArch(process.arch);
+  const debPath = join(paths.appBuilderOutputRoot, debianPackageFileName(version, architecture));
+  const packageRoot = paths.debPackageRoot;
+  const optRoot = join(packageRoot, "opt", "open-design");
+
+  await rm(paths.debRoot, { force: true, recursive: true });
+  await mkdir(join(packageRoot, "DEBIAN"), { recursive: true });
+  await mkdir(join(packageRoot, "usr", "bin"), { recursive: true });
+  await mkdir(join(packageRoot, "usr", "lib", "systemd", "user"), { recursive: true });
+  await mkdir(join(packageRoot, "usr", "share", "doc", "open-design"), { recursive: true });
+  await mkdir(join(packageRoot, "opt", "open-design", "resources"), { recursive: true });
+  await mkdir(paths.appBuilderOutputRoot, { recursive: true });
+
+  await cp(paths.assembledAppRoot, join(optRoot, "app"), { recursive: true });
+  await cp(paths.resourceRoot, join(optRoot, "resources", "open-design"), { recursive: true });
+
+  await writeFile(join(packageRoot, "DEBIAN", "control"), renderOpenDesignDebControl({ architecture, version }), "utf8");
+  await writeFile(join(packageRoot, "usr", "bin", "open-design"), renderOpenDesignDebLauncher(config.namespace), {
+    encoding: "utf8",
+    mode: 0o755,
+  });
+  await writeFile(
+    join(packageRoot, "usr", "lib", "systemd", "user", "open-design.service"),
+    renderOpenDesignDebService(config.namespace),
+    "utf8",
+  );
+  await writeFile(
+    join(packageRoot, "usr", "share", "doc", "open-design", "README.Debian"),
+    [
+      "Open Design headless runtime",
+      "",
+      "Start after install:",
+      "  open-design start",
+      "",
+      "Check Claude Code visibility:",
+      "  open-design doctor",
+      "",
+      "The package includes Open Design's Node runtime and application files.",
+      "Claude Code itself is intentionally not bundled; install and authenticate it separately.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  await execFileAsync("dpkg-deb", ["--build", "--root-owner-group", packageRoot, debPath], {
+    cwd: config.workspaceRoot,
+    env: process.env,
+  });
+
+  return debPath;
+}
+
 // --- Step 7: packLinux orchestrator + result type + stub for runBuildInContainer ---
 
 export type LinuxPackResult = {
   appImagePath: string | null;
+  debPath: string | null;
   outputRoot: string;
   resourceRoot: string;
   runtimeNamespaceRoot: string;
@@ -627,9 +1000,11 @@ export async function packLinux(config: ToolPackConfig): Promise<LinuxPackResult
   if (config.containerized) {
     await runBuildInContainer(config);
     const paths = resolveLinuxPaths(config);
-    const appImagePath = config.to === "dir" ? null : await findBuiltAppImage(paths);
+    const appImagePath = config.to === "dir" || config.to === "deb" ? null : await findBuiltAppImage(paths);
+    const debPath = config.to === "deb" ? await findBuiltDeb(paths) : null;
     return {
       appImagePath,
+      debPath,
       outputRoot: paths.appBuilderOutputRoot,
       resourceRoot: paths.resourceRoot,
       runtimeNamespaceRoot: config.roots.runtime.namespaceRoot,
@@ -644,12 +1019,27 @@ export async function packLinux(config: ToolPackConfig): Promise<LinuxPackResult
   await copyResourceTree(config, paths);
   const tarballs = await collectWorkspaceTarballs(config, paths);
   await writeAssembledApp(config, paths, tarballs);
+
+  if (config.to === "deb") {
+    const debPath = await buildLinuxDebPackage(config, paths);
+    return {
+      appImagePath: null,
+      debPath,
+      outputRoot: paths.appBuilderOutputRoot,
+      resourceRoot: paths.resourceRoot,
+      runtimeNamespaceRoot: config.roots.runtime.namespaceRoot,
+      to: config.to,
+      containerized: false,
+    };
+  }
+
   await writeLinuxBuilderConfig(config, paths);
   await runElectronBuilderLinux(config, paths);
 
   const appImagePath = config.to === "dir" ? null : await findBuiltAppImage(paths);
   return {
     appImagePath,
+    debPath: null,
     outputRoot: paths.appBuilderOutputRoot,
     resourceRoot: paths.resourceRoot,
     runtimeNamespaceRoot: config.roots.runtime.namespaceRoot,

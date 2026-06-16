@@ -28,8 +28,13 @@ import type { ToolPackConfig } from "../src/config.js";
 import {
   buildDockerArgs,
   cleanupPackedLinuxNamespace,
+  debianArchitectureForNodeArch,
+  debianVersionForAppVersion,
   inspectPackedLinuxApp,
   matchesAppImageProcess,
+  renderOpenDesignDebControl,
+  renderOpenDesignDebLauncher,
+  renderOpenDesignDebService,
   renderDesktopTemplate,
   resolveLinuxLifecycleMode,
   resolveProductionInstallCommand,
@@ -252,6 +257,12 @@ describe("buildDockerArgs", () => {
     const args = buildDockerArgs(makeConfig(), { uid: 1000, gid: 1000 });
     const last = args[args.length - 1];
     expect(last).toMatch(/--dir \/tools-pack/);
+  });
+
+  it("forwards --to deb to the inner containerized build", () => {
+    const args = buildDockerArgs({ ...makeConfig(), to: "deb" }, { uid: 1000, gid: 1000 });
+    const last = args[args.length - 1];
+    expect(last).toMatch(/linux build --to deb --namespace default/);
   });
 
   it("forwards --portable when config.portable is true", () => {
@@ -600,6 +611,53 @@ MimeType=x-scheme-handler/od;
       iconName: "open-design-ns",
     });
     expect(out).toContain("MimeType=x-scheme-handler/od;");
+  });
+});
+
+describe("Debian package helpers", () => {
+  it("maps supported Node architectures to Debian architecture names", () => {
+    expect(debianArchitectureForNodeArch("x64")).toBe("amd64");
+    expect(debianArchitectureForNodeArch("arm64")).toBe("arm64");
+    expect(() => debianArchitectureForNodeArch("ia32")).toThrow(/unsupported Debian package architecture/);
+  });
+
+  it("renders Debian versions with prereleases sorting before stable", () => {
+    expect(debianVersionForAppVersion("0.10.0")).toBe("0.10.0-1");
+    expect(debianVersionForAppVersion("0.10.0-beta.1")).toBe("0.10.0~beta.1-1");
+    expect(debianVersionForAppVersion("0.10.0.nightly.2")).toBe("0.10.0~nightly.2-1");
+  });
+
+  it("renders a Debian control file for apt install ./artifact.deb", () => {
+    const control = renderOpenDesignDebControl({
+      architecture: "amd64",
+      version: "0.10.0-1",
+    });
+
+    expect(control).toContain("Package: open-design\n");
+    expect(control).toContain("Version: 0.10.0-1\n");
+    expect(control).toContain("Architecture: amd64\n");
+    expect(control).toContain("Depends: ca-certificates\n");
+    expect(control).toContain("Recommends: git, curl\n");
+  });
+
+  it("renders the user systemd service around the public open-design launcher", () => {
+    const service = renderOpenDesignDebService("release-beta-linux");
+
+    expect(service).toContain("Environment=OD_PACKAGED_NAMESPACE=release-beta-linux\n");
+    expect(service).toContain("Environment=OD_DESKTOP_LOG_ECHO=1\n");
+    expect(service).toContain("ExecStart=/usr/bin/open-design run\n");
+    expect(service).toContain("WantedBy=default.target\n");
+  });
+
+  it("renders a launcher with systemd and non-systemd start paths", () => {
+    const launcher = renderOpenDesignDebLauncher("release beta/linux");
+
+    expect(launcher).toContain('DEFAULT_NAMESPACE="release-beta-linux"\n');
+    expect(launcher).toContain('APP_ROOT="/opt/open-design"\n');
+    expect(launcher).toContain('OD_RESOURCE_ROOT="$RESOURCE_ROOT"');
+    expect(launcher).toContain('systemctl --user start "$SERVICE_NAME"');
+    expect(launcher).toContain('nohup "$NODE" "$ENTRY" "$@" >>"$LOG_PATH" 2>&1 &');
+    expect(launcher).toContain("claude auth status --text");
   });
 });
 
