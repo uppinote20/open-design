@@ -360,11 +360,28 @@ async function runPnpm(
   args: string[],
   extraEnv: NodeJS.ProcessEnv = {},
 ): Promise<void> {
-  const invocation = createPackageManagerInvocation(args, process.env);
+  const invocation = resolveWorkspacePnpmInvocation(args, process.env);
   await execFileAsync(invocation.command, invocation.args, {
     cwd: config.workspaceRoot,
     env: { ...process.env, ...extraEnv },
   });
+}
+
+// The inner containerized build is launched via `node tools-pack …`, so
+// `npm_execpath` is unset and createPackageManagerInvocation would fall back to
+// `corepack pnpm …` — but `electronuserland/builder:base` strips corepack.
+// buildDockerArgs bootstraps a standalone pnpm and exports its path through
+// OD_TOOLS_PACK_PNPM_BIN; prefer that binary directly (same source of truth as
+// resolveProductionInstallCommand) so workspace builds don't reach for corepack.
+export function resolveWorkspacePnpmInvocation(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): { command: string; args: string[] } {
+  const pnpmBin = env[PRODUCTION_INSTALL_PNPM_BIN_ENV];
+  if (pnpmBin != null && pnpmBin.length > 0) {
+    return { command: pnpmBin, args };
+  }
+  return createPackageManagerInvocation(args, env);
 }
 
 export type ProductionInstallCommand = { command: string; args: string[] };

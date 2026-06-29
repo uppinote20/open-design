@@ -38,6 +38,7 @@ import {
   renderDesktopTemplate,
   resolveLinuxLifecycleMode,
   resolveProductionInstallCommand,
+  resolveWorkspacePnpmInvocation,
   shouldRejectLinuxHeadlessInspectOptions,
   sanitizeNamespace,
   stopPackedLinuxHeadless,
@@ -563,6 +564,45 @@ describe("resolveProductionInstallCommand", () => {
       args: ["install", "--prod", "--no-lockfile", "--config.node-linker=hoisted"],
     });
     expect(resolved.command).not.toBe("npm");
+  });
+});
+
+describe("resolveWorkspacePnpmInvocation", () => {
+  it("runs the bootstrapped standalone pnpm directly when OD_TOOLS_PACK_PNPM_BIN is set", () => {
+    // Regression: the inner containerized build launches via `node`, so
+    // npm_execpath is unset and the generic resolver would reach for the
+    // absent `corepack pnpm`, failing with spawn corepack ENOENT.
+    const args = ["--filter", "@open-design/release", "build"];
+    expect(resolveWorkspacePnpmInvocation(args, { OD_TOOLS_PACK_PNPM_BIN: "/tmp/pnpm" })).toEqual({
+      command: "/tmp/pnpm",
+      args,
+    });
+  });
+
+  it("never falls back to corepack when the standalone pnpm bin is set", () => {
+    const invocation = resolveWorkspacePnpmInvocation(["--filter", "@open-design/web", "build"], {
+      OD_TOOLS_PACK_PNPM_BIN: "/tmp/pnpm",
+    });
+    expect(invocation.command).not.toBe("corepack");
+  });
+
+  it("treats an empty OD_TOOLS_PACK_PNPM_BIN as unset and falls back to the generic invocation", () => {
+    const args = ["--filter", "@open-design/release", "build"];
+    const invocation = resolveWorkspacePnpmInvocation(args, { OD_TOOLS_PACK_PNPM_BIN: "" });
+    expect(invocation.command).not.toBe("");
+  });
+
+  it("chains end-to-end with buildDockerArgs: the exported pnpm bin drives workspace builds without corepack", () => {
+    const dockerArgs = buildDockerArgs(makeConfig(), { uid: 1000, gid: 1000 });
+    const envFlagIndex = dockerArgs.findIndex(
+      (arg, i) => arg === "-e" && dockerArgs[i + 1]?.startsWith("OD_TOOLS_PACK_PNPM_BIN="),
+    );
+    const envValue = dockerArgs[envFlagIndex + 1]?.split("=")[1];
+    const invocation = resolveWorkspacePnpmInvocation(["--filter", "@open-design/release", "build"], {
+      OD_TOOLS_PACK_PNPM_BIN: envValue,
+    });
+    expect(invocation.command).toBe("/tmp/pnpm");
+    expect(invocation.command).not.toBe("corepack");
   });
 });
 

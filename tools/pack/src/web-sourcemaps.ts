@@ -127,11 +127,17 @@ async function runPnpm(
   args: string[],
   extraEnv: NodeJS.ProcessEnv = {},
 ): Promise<void> {
-  // `createPackageManagerInvocation` is the same primitive every platform's
-  // local `runPnpm` helper goes through, so the linux containerized build
-  // (which sets `OD_TOOLS_PACK_PNPM_BIN` to the standalone pnpm binary it
-  // bootstrapped) picks up the right command here too.
-  const invocation = createPackageManagerInvocation(args, process.env);
+  // The linux containerized build runs inside electronuserland/builder:base
+  // (which strips npm/npx/corepack) and launches the inner build via `node`, so
+  // `npm_execpath` is unset and createPackageManagerInvocation would fall back
+  // to the absent `corepack pnpm`. buildDockerArgs bootstraps a standalone pnpm
+  // and exports its path through OD_TOOLS_PACK_PNPM_BIN; prefer that binary
+  // directly when present, mirroring linux.ts runPnpm and the production install.
+  const pnpmBin = process.env.OD_TOOLS_PACK_PNPM_BIN;
+  const invocation =
+    pnpmBin != null && pnpmBin.length > 0
+      ? { command: pnpmBin, args, windowsVerbatimArguments: undefined }
+      : createPackageManagerInvocation(args, process.env);
   await execFileAsync(invocation.command, invocation.args, {
     cwd: config.workspaceRoot,
     env: { ...process.env, ...extraEnv },
