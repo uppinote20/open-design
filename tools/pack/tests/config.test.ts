@@ -93,6 +93,14 @@ describe("resolveToolPackConfig cache root", () => {
   });
 });
 
+describe("resolveToolPackConfig linux build target", () => {
+  it("accepts the Debian package target and rejects unsupported values", () => {
+    expect(resolveToolPackConfig("linux", { to: "deb" }).to).toBe("deb");
+    expect(resolveToolPackConfig("linux", { to: "appimage" }).to).toBe("appimage");
+    expect(() => resolveToolPackConfig("linux", { to: "nsis" })).toThrow(/unsupported linux --to target: nsis/);
+  });
+});
+
 describe("resolveToolPackConfig namespace defaults", () => {
   it("keeps ordinary local builds on the default namespace", () => {
     expect(resolveToolPackConfig("mac").namespace).toBe("default");

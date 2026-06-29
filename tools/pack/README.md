@@ -95,6 +95,7 @@ Local lifecycle commands:
 
 - `tools-pack linux build --to all` (default; produces AppImage)
 - `tools-pack linux build --to appimage` (explicit AppImage)
+- `tools-pack linux build --to deb` (headless Debian package for `apt install ./...deb`)
 - `tools-pack linux build --to dir` (unpacked output for fast iteration)
 - `tools-pack linux build --containerized` (run electron-builder inside `electronuserland/builder:base` Docker for a wider glibc compatibility target — requires Docker)
 - `tools-pack linux build --to all --portable` (release artifacts that must not bake local tools-pack runtime paths)
@@ -137,6 +138,30 @@ Headless mode targets environments without a display (WSL2, headless servers, CI
 
 `logs` always reads `logs/desktop/latest.log` regardless of mode, so headless output is visible via `tools-pack linux logs`.
 
+### Debian package (`--to deb`)
+
+`tools-pack linux build --to deb --portable` produces a headless `.deb` under
+`.tmp/tools-pack/out/linux/namespaces/<namespace>/builder/`, for example:
+
+```bash
+pnpm tools-pack linux build --to deb --portable
+sudo apt install ./.tmp/tools-pack/out/linux/namespaces/default/builder/open-design_*_amd64.deb
+open-design start
+```
+
+The Debian package installs:
+
+- `/opt/open-design/app` — the assembled Open Design app.
+- `/opt/open-design/resources/open-design/bin/node` — bundled Node runtime.
+- `/usr/bin/open-design` — start/stop/status/logs/doctor/run wrapper.
+- `/usr/lib/systemd/user/open-design.service` — optional user service used when `systemctl --user` is available.
+
+The wrapper falls back to a pidfile-backed background process when user
+systemd is unavailable, which keeps WSL installs usable without extra setup.
+Run `open-design doctor` after install to verify the bundled runtime and that
+the host `claude` CLI is visible and authenticated. Claude Code is intentionally
+not bundled in the `.deb`; users must install and authenticate it separately.
+
 ### AppImage launch mode (FUSE caveat)
 
 `tools-pack linux start` always spawns the AppImage with `--appimage-extract-and-run`. Smoke testing on Ubuntu 24.04 and Arch Linux showed that direct FUSE-mounted AppImage launches make Node module loads (Express, better-sqlite3, etc.) slow enough that the daemon sidecar consistently failed to clear `apps/packaged`'s 35-second startup timeout. Extract-and-run unpacks the AppImage into `/tmp/appimage_extracted_<hex>/` and exec's the inner Electron from there, bypassing FUSE and getting daemon boot in under 5 seconds — roughly an order-of-magnitude improvement.
@@ -171,11 +196,16 @@ Verified smoke coverage in this repository currently includes:
 
 Linux desktop apps in this space split across formats: VS Code ships `.deb` + `.rpm` + Snap; Discord ships AppImage + `.deb`; Slack ships `.deb` + `.rpm`; Cursor and Obsidian ship AppImage. We start with AppImage because one artifact can cover the widest glibc-compatible target without distro repositories, store packaging, signing infrastructure, or per-format install scripts, and it integrates cleanly with the namespace-scoped install layout. `.deb` / `.rpm` / Snap / Flatpak can land incrementally when user demand justifies the extra release ownership.
 
+The first incremental package format is a headless `.deb` for WSL/server usage.
+It deliberately does not replace AppImage for Linux desktop installs; it wraps
+the same packaged headless entry with a system package surface so fresh Ubuntu
+users can install via `sudo apt install ./open-design_...deb`.
+
 ### Out of scope (later phases)
 
 - AppImage signing (`--signed`) — deferred pending a GPG key infrastructure decision and a user-facing verification flow design (no ETA).
 - AppImage auto-update feed (`latest-linux.yml`) — the linux electron-builder config has no `publish` block wired, so a generated feed would point users at a feed that never updates. Tracked alongside signing.
-- Additional package formats: `.deb`, `.rpm`, Snap, Flatpak — deferred until there is demand and an owner for per-distro metadata, signing/store/repository plumbing, install/remove hooks, and release validation.
+- Additional package formats beyond the headless `.deb`: `.rpm`, Snap, Flatpak, and a full desktop `.deb` — deferred until there is demand and an owner for per-distro metadata, signing/store/repository plumbing, install/remove hooks, and release validation.
 - Full Linux AppImage PR smoke remains release-lane only; PR validation runs the Linux headless packaged smoke because it does not require a display server.
 
 `--to dmg` is manual-install DMG output only. Any builder-generated updater metadata such as `latest-mac.yml` or
