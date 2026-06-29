@@ -520,6 +520,16 @@ async function writeAssembledApp(
     dependencies[tarball.packageName] = `file:${join(paths.tarballsRoot, tarball.fileName)}`;
   }
 
+  // `pnpm pack` rewrites each tarball's `workspace:*` internal deps to a plain
+  // version (e.g. "0.11.1"). The npm production-install path hoists the
+  // top-level `file:` tarball and satisfies those transitive versions from it,
+  // but the containerized standalone-pnpm path (`--no-lockfile`) does not dedupe
+  // a transitive registry-style spec against a top-level `file:` dep — it tries
+  // the public registry and 404s on the unpublished `@open-design/*` scope.
+  // Force every occurrence (direct AND transitive) of each internal package to
+  // its local tarball via pnpm overrides; npm ignores the `pnpm` key.
+  const overrides = { ...dependencies };
+
   const version = await readPackagedVersion(config);
   const packageVersion = electronBuilderVersionForAppVersion(version);
   const packageJson = {
@@ -528,6 +538,7 @@ async function writeAssembledApp(
     private: true,
     main: "main.cjs",
     dependencies,
+    pnpm: { overrides },
     description: "Local-first design product: detects your installed code-agent CLI, runs design skills + design systems, streams artifacts into a sandboxed preview.",
     author: "Open Design Team",
     repository: {
