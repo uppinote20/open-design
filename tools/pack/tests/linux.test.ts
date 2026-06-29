@@ -207,6 +207,18 @@ describe("buildDockerArgs", () => {
     );
   });
 
+  it("runs the in-container install with CI=true so the no-TTY purge prompt cannot abort it", () => {
+    // Regression: `docker run` has no TTY and does not inherit the host CI env,
+    // so without this the in-container pnpm aborts with
+    // ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY when it wants to purge the
+    // stale node_modules left in the bind-mounted /project.
+    const args = buildDockerArgs(makeConfig(), { uid: 1000, gid: 1000 });
+    const last = args[args.length - 1];
+    expect(last).toContain("CI=true /tmp/pnpm install --frozen-lockfile");
+    // CI=true must stay scoped to the install, not leak into the build step.
+    expect(last).not.toContain("CI=true node tools/pack/bin/tools-pack.mjs");
+  });
+
   it("picks the pnpm asset by container CPU so amd64 and arm64 hosts both work", () => {
     const args = buildDockerArgs(makeConfig(), { uid: 1000, gid: 1000 });
     const last = args[args.length - 1];

@@ -194,7 +194,13 @@ export function buildDockerArgs(
   if (config.appVersion != null) {
     innerArgs.push(`--app-version ${shellQuote(config.appVersion)}`);
   }
-  const innerCommand = `{ ${setupPnpm} && ${pnpmCmd} install --frozen-lockfile; } >&2 && ` + innerArgs.join(" ");
+  // `docker run` is launched without a TTY and without inheriting the host's
+  // `CI` env, so the in-container `pnpm install` cannot interactively confirm
+  // purging the stale `node_modules` left in the bind-mounted `/project` by the
+  // host-side install. That aborts with ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY.
+  // Scope `CI=true` to just the install (pnpm's documented non-interactive
+  // signal) so the build step that follows keeps its normal environment.
+  const innerCommand = `{ ${setupPnpm} && CI=true ${pnpmCmd} install --frozen-lockfile; } >&2 && ` + innerArgs.join(" ");
 
   const dockerArgs = [
     "run",
