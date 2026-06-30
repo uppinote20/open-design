@@ -28,6 +28,7 @@ import type { ToolPackConfig } from "../src/config.js";
 import {
   buildDockerArgs,
   cleanupPackedLinuxNamespace,
+  createLinuxAssembledPackageJson,
   debianArchitectureForNodeArch,
   debianVersionForAppVersion,
   inspectPackedLinuxApp,
@@ -564,6 +565,17 @@ describe("resolveProductionInstallCommand", () => {
       args: ["install", "--prod", "--no-lockfile", "--config.node-linker=hoisted"],
     });
     expect(resolved.command).not.toBe("npm");
+  });
+});
+
+describe("createLinuxAssembledPackageJson", () => {
+  it("allows better-sqlite3 build scripts in the pnpm production install manifest", () => {
+    const manifest = createLinuxAssembledPackageJson({
+      dependencies: { "@open-design/daemon": "file:/tmp/open-design-daemon.tgz" },
+      packageVersion: "0.11.1",
+    });
+
+    expect(manifest.pnpm.onlyBuiltDependencies).toContain("better-sqlite3");
   });
 });
 

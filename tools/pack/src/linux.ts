@@ -48,6 +48,7 @@ const CONTAINER_PNPM_PATH = "/tmp/pnpm";
 const CONTAINER_PNPM_HOME = "/tmp/pnpm-home";
 const CONTAINER_NODE_VERSION = "24.14.1";
 const CONTAINER_TOOLS_PACK_CLI_PATH = "tools/pack/bin/tools-pack.mjs";
+const LINUX_ASSEMBLED_PNPM_ONLY_BUILT_DEPENDENCIES = ["better-sqlite3"] as const;
 
 export const INTERNAL_PACKAGES = [
   { directory: "packages/release", name: "@open-design/release" },
@@ -68,6 +69,57 @@ export const INTERNAL_PACKAGES = [
   { directory: "apps/desktop", name: "@open-design/desktop" },
   { directory: "apps/packaged", name: "@open-design/packaged" },
 ] as const;
+
+export type LinuxAssembledPackageJsonInput = {
+  dependencies: Record<string, string>;
+  packageVersion: string;
+};
+
+export type LinuxAssembledPackageJson = {
+  name: string;
+  version: string;
+  private: boolean;
+  main: string;
+  dependencies: Record<string, string>;
+  pnpm: {
+    overrides: Record<string, string>;
+    onlyBuiltDependencies: string[];
+  };
+  description: string;
+  author: string;
+  repository: {
+    type: string;
+    url: string;
+  };
+};
+
+export function createLinuxAssembledPackageJson({
+  dependencies,
+  packageVersion,
+}: LinuxAssembledPackageJsonInput): LinuxAssembledPackageJson {
+  // `pnpm pack` rewrites each tarball's `workspace:*` internal deps to a plain
+  // version. Force direct and transitive internal packages to local tarballs;
+  // npm ignores the `pnpm` key on native developer-machine builds.
+  const overrides = { ...dependencies };
+
+  return {
+    name: "open-design-packaged",
+    version: packageVersion,
+    private: true,
+    main: "main.cjs",
+    dependencies,
+    pnpm: {
+      overrides,
+      onlyBuiltDependencies: [...LINUX_ASSEMBLED_PNPM_ONLY_BUILT_DEPENDENCIES],
+    },
+    description: "Local-first design product: detects your installed code-agent CLI, runs design skills + design systems, streams artifacts into a sandboxed preview.",
+    author: "Open Design Team",
+    repository: {
+      type: "git",
+      url: "https://github.com/nexu-io/open-design.git",
+    },
+  };
+}
 
 export function sanitizeNamespace(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]+/g, "-");
@@ -520,32 +572,9 @@ async function writeAssembledApp(
     dependencies[tarball.packageName] = `file:${join(paths.tarballsRoot, tarball.fileName)}`;
   }
 
-  // `pnpm pack` rewrites each tarball's `workspace:*` internal deps to a plain
-  // version (e.g. "0.11.1"). The npm production-install path hoists the
-  // top-level `file:` tarball and satisfies those transitive versions from it,
-  // but the containerized standalone-pnpm path (`--no-lockfile`) does not dedupe
-  // a transitive registry-style spec against a top-level `file:` dep — it tries
-  // the public registry and 404s on the unpublished `@open-design/*` scope.
-  // Force every occurrence (direct AND transitive) of each internal package to
-  // its local tarball via pnpm overrides; npm ignores the `pnpm` key.
-  const overrides = { ...dependencies };
-
   const version = await readPackagedVersion(config);
   const packageVersion = electronBuilderVersionForAppVersion(version);
-  const packageJson = {
-    name: "open-design-packaged",
-    version: packageVersion,
-    private: true,
-    main: "main.cjs",
-    dependencies,
-    pnpm: { overrides },
-    description: "Local-first design product: detects your installed code-agent CLI, runs design skills + design systems, streams artifacts into a sandboxed preview.",
-    author: "Open Design Team",
-    repository: {
-      type: "git",
-      url: "https://github.com/nexu-io/open-design.git"
-    }
-  };
+  const packageJson = createLinuxAssembledPackageJson({ dependencies, packageVersion });
   await writeFile(paths.assembledPackageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
 
   const mainStub = `"use strict";\nrequire("@open-design/packaged");\n`;
