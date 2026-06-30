@@ -718,6 +718,10 @@ describe("Debian package helpers", () => {
 
     expect(launcher).toContain('DEFAULT_NAMESPACE="release-beta-linux"\n');
     expect(launcher).toContain('APP_ROOT="/opt/open-design"\n');
+    expect(launcher).toContain('CLAUDE_CODE_PROFILE="/etc/profile.d/claude-code.sh"\n');
+    expect(launcher).toContain('if [ -r "$CLAUDE_CODE_PROFILE" ]; then');
+    expect(launcher).toContain('. "$CLAUDE_CODE_PROFILE"');
+    expect(launcher).toContain('load_claude_code_profile\n');
     expect(launcher).toContain('OD_RESOURCE_ROOT="$RESOURCE_ROOT"');
     expect(launcher).toContain('systemctl --user start "$SERVICE_NAME"');
     expect(launcher).toContain('nohup "$NODE" "$ENTRY" "$@" >>"$LOG_PATH" 2>&1 &');
