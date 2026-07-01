@@ -54,12 +54,27 @@ const PACKAGED_CHILD_ENV_ALLOWLIST = [
   "no_proxy",
 ] as const;
 
+// Claude Code CLI's own env namespace (ANTHROPIC_BASE_URL, ANTHROPIC_MODEL,
+// CLAUDE_CODE_ALLOWED_MODELS, ...). These are read directly by the `claude`
+// binary itself, not parsed by Open Design, so a company-wide profile (e.g.
+// /etc/profile.d/claude-code.sh loaded by the .deb launcher — see commit
+// 0801cfce) that points Claude Code at a self-hosted Anthropic-API-compatible
+// proxy must survive into the daemon sidecar's env. Matched by prefix rather
+// than enumerated: Claude Code ships more ANTHROPIC_*/CLAUDE_CODE_* vars than
+// any one report will name, and hand-enumerating invites drift. Gated by the
+// same includeProviderSecrets flag as the _API_KEY/_TOKEN suffix rule below —
+// daemon-spawn only.
+const PACKAGED_CHILD_ENV_PROVIDER_PREFIXES = ["ANTHROPIC_", "CLAUDE_CODE_"] as const;
+
 function shouldForwardPackagedChildEnv(key: string, includeProviderSecrets = false): boolean {
   return (
     PACKAGED_CHILD_ENV_ALLOWLIST.includes(
       key as (typeof PACKAGED_CHILD_ENV_ALLOWLIST)[number],
     ) ||
-    (includeProviderSecrets && (key.endsWith("_API_KEY") || key.endsWith("_TOKEN")))
+    (includeProviderSecrets &&
+      (key.endsWith("_API_KEY") ||
+        key.endsWith("_TOKEN") ||
+        PACKAGED_CHILD_ENV_PROVIDER_PREFIXES.some((prefix) => key.startsWith(prefix))))
   );
 }
 
