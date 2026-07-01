@@ -726,6 +726,15 @@ describe("Debian package helpers", () => {
     expect(launcher).toContain('systemctl --user start "$SERVICE_NAME"');
     expect(launcher).toContain('nohup "$NODE" "$ENTRY" "$@" >>"$LOG_PATH" 2>&1 &');
     expect(launcher).toContain("claude auth status --text");
+    // doctor: surface what env doctor actually sees instead of silently
+    // staying green when a company profile's ANTHROPIC_BASE_URL never
+    // reaches the daemon sidecar (packaged env-allowlist bug).
+    expect(launcher).toContain('if [ -n "${ANTHROPIC_BASE_URL:-}" ]; then');
+    expect(launcher).toContain("ANTHROPIC_BASE_URL: %s");
+    expect(launcher).toContain("not set (using default Anthropic API endpoint)");
+    expect(launcher).toContain('curl --connect-timeout 5 --max-time 8 -s -o /dev/null "$ANTHROPIC_BASE_URL"');
+    expect(launcher).toContain("ANTHROPIC_BASE_URL reachable");
+    expect(launcher).toContain("did not respond within 5s");
   });
 });
 
