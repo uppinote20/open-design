@@ -221,6 +221,93 @@ describe('packaged child Vite+ environment forwarding', () => {
       rmSync(vpHome, { recursive: true, force: true });
     }
   });
+
+  it('still forwards ANTHROPIC_AUTH_TOKEN via the existing _TOKEN suffix rule', () => {
+    const env = resolvePackagedChildBaseEnv(
+      {
+        ANTHROPIC_AUTH_TOKEN: 'sk-ant-test-token',
+        HOME: '/Users/tester',
+      },
+      true,
+      {},
+      false,
+    );
+
+    expect(env).toMatchObject({
+      ANTHROPIC_AUTH_TOKEN: 'sk-ant-test-token',
+      HOME: '/Users/tester',
+    });
+  });
+
+  it('forwards ANTHROPIC_/CLAUDE_CODE_-prefixed Claude Code CLI env to the daemon sidecar when includeProviderSecrets=true', () => {
+    const env = resolvePackagedChildBaseEnv(
+      {
+        // ANTHROPIC_SMALL_FAST_MODEL is not in the bug report's named list —
+        // included to prove the prefix rule generalizes instead of drifting
+        // behind Claude Code's growing env surface.
+        ANTHROPIC_BASE_URL: 'https://litellm.example.com',
+        ANTHROPIC_MODEL: 'claude-proxy-model',
+        ANTHROPIC_SMALL_FAST_MODEL: 'claude-proxy-fast-model',
+        CLAUDE_CODE_ALLOWED_MODELS: 'claude-proxy-model',
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        CLAUDE_CODE_ENFORCE_ALLOWED_MODELS: '1',
+        CLAUDE_CODE_SKIP_WEBFETCH_PREFLIGHT: '1',
+        HOME: '/Users/tester',
+      },
+      true,
+      {},
+      false,
+    );
+
+    expect(env).toMatchObject({
+      ANTHROPIC_BASE_URL: 'https://litellm.example.com',
+      ANTHROPIC_MODEL: 'claude-proxy-model',
+      ANTHROPIC_SMALL_FAST_MODEL: 'claude-proxy-fast-model',
+      CLAUDE_CODE_ALLOWED_MODELS: 'claude-proxy-model',
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      CLAUDE_CODE_ENFORCE_ALLOWED_MODELS: '1',
+      CLAUDE_CODE_SKIP_WEBFETCH_PREFLIGHT: '1',
+      HOME: '/Users/tester',
+    });
+  });
+
+  it('drops ANTHROPIC_/CLAUDE_CODE_-prefixed env for non-daemon sidecars (includeProviderSecrets=false)', () => {
+    const env = resolvePackagedChildBaseEnv(
+      {
+        ANTHROPIC_AUTH_TOKEN: 'sk-ant-test-token',
+        ANTHROPIC_BASE_URL: 'https://litellm.example.com',
+        CLAUDE_CODE_ALLOWED_MODELS: 'claude-proxy-model',
+        HOME: '/Users/tester',
+      },
+      false,
+      {},
+      false,
+    );
+
+    expect(env).toMatchObject({ HOME: '/Users/tester' });
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(env.CLAUDE_CODE_ALLOWED_MODELS).toBeUndefined();
+  });
+
+  it('does not forward unrelated env vars even when includeProviderSecrets=true', () => {
+    const env = resolvePackagedChildBaseEnv(
+      {
+        ANTHROPIC_BASE_URL: 'https://litellm.example.com',
+        HOME: '/Users/tester',
+        RANDOM_INTERNAL_FLAG: 'drop-me',
+      },
+      true,
+      {},
+      false,
+    );
+
+    expect(env).toMatchObject({
+      ANTHROPIC_BASE_URL: 'https://litellm.example.com',
+      HOME: '/Users/tester',
+    });
+    expect(env.RANDOM_INTERNAL_FLAG).toBeUndefined();
+  });
 });
 
 describe('resolvePackagedElectronNodeCommand', () => {
